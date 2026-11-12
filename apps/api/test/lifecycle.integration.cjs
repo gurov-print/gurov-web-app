@@ -1,0 +1,151 @@
+const assert = require('node:assert/strict');
+const { request } = require('node:http');
+const { test } = require('node:test');
+const { setTimeout: delay } = require('node:timers/promises');
+
+const { createHttpAdapter } = require('../dist/config/http-adapter.js');
+require('reflect-metadata');
+const { Controller, Get, UseGuards } = require('@nestjs/common');
+const { Test } = require('@nestjs/testing');
+
+const { EnvironmentService } = require('../dist/config/environment.service.js');
+const {
+  LifecycleService,
+} = require('../dist/infrastructure/lifecycle/lifecycle.service.js');
+const {
+  RequestLifecycleInterceptor,
+} = require('../dist/infrastructure/lifecycle/request-lifecycle.interceptor.js');
+const {
+  trackGuard,
+} = require('../dist/infrastructure/lifecycle/track-guard.js');
+const { until } = require('./helpers/until.cjs');
+
+for (const phase of ['handler', 'guard']) {
+  void test(
+    `shutdown waits for a disconnected caller's unfinished ${phase}`,
+    { timeout: 5000 },
+    async () => {
+      let started = false,
+        completed = false,
+        handlerCalled = false,
+        release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      const operation = async () => {
+        started = true;
+        await gate;
+        completed = true;
+        return true;
+      };
+      class Guard {
+        canActivate(context) {
+          return trackGuard(context, operation);
+        }
+      }
+      class WorkController {
+        async work() {
+          handlerCalled = true;
+          if (phase === 'handler') await operation();
+          return 'done';
+        }
+      }
+      Controller()(WorkController);
+      Get('work')(
+        WorkController.prototype,
+        'work',
+        Object.getOwnPropertyDescriptor(WorkController.prototype, 'work'),
+      );
+      if (phase === 'guard') UseGuards(Guard)(WorkController);
+      const module = await Test.createTestingModule({
+        controllers: [WorkController],
+        providers: [
+          Guard,
+          LifecycleService,
+          {
+            provide: EnvironmentService,
+            useValue: { shutdownTimeoutMs: 2000 },
+          },
+        ],
+      }).compile();
+      const app = module.createNestApplication(createHttpAdapter(), {
+        logger: false,
+      });
+      const lifecycle = app.get(LifecycleService);
+      app.getHttpAdapter().setDrainHandler(() => lifecycle.drain());
+      app.use(lifecycle.middleware);
+      app.useGlobalInterceptors(new RequestLifecycleInterceptor());
+      await app.listen(0, '127.0.0.1');
+      let closed;
+      const caller = request(`${await app.getUrl()}/work`);
+      caller.on('error', () => undefined);
+      caller.end();
+      try {
+        await until(() => started);
+        caller.destroy();
+        await delay(30);
+        let done = false;
+        closed = app.close().then(() => {
+          done = true;
+        });
+        await delay(30);
+        assert.equal(
+          done,
+          false,
+          'Must not close dependencies while request work is unfinished',
+        );
+        assert.equal(lifecycle.isDraining, true);
+        release();
+        await closed;
+        assert.equal(completed, true);
+        assert.equal(handlerCalled, phase === 'handler');
+      } finally {
+        release();
+        caller.destroy();
+        await (closed ?? app.close());
+      }
+    },
+  );
+}
+
+void test('drain deadline rejects without pretending that outstanding work completed', async () => {
+  const lifecycle = new LifecycleService({ shutdownTimeoutMs: 50 });
+  lifecycle.register('stalled-worker', () => new Promise(() => undefined));
+  const started = Date.now();
+  await assert.rejects(lifecycle.drain(), /deadline exceeded/);
+  assert(Date.now() - started < 1000);
+  assert.equal(lifecycle.isDraining, true);
+});
+
+void test('native pre-close drain rejects before Nest can suppress hook errors or destroy dependencies', async () => {
+  let destroyed = false;
+  const module = await Test.createTestingModule({
+    providers: [
+      LifecycleService,
+      { provide: EnvironmentService, useValue: { shutdownTimeoutMs: 50 } },
+      {
+        provide: 'dependency',
+        useValue: {
+          onModuleDestroy() {
+            destroyed = true;
+          },
+        },
+      },
+    ],
+  }).compile();
+  const app = module.createNestApplication(createHttpAdapter(), {
+    logger: false,
+  });
+  const lifecycle = app.get(LifecycleService);
+  lifecycle.register('stalled-worker', () => new Promise(() => undefined));
+  app.getHttpAdapter().setDrainHandler(() => lifecycle.drain());
+  await app.init();
+  const started = Date.now();
+  await assert.rejects(app.close(), /deadline exceeded/);
+  assert(Date.now() - started < 1000);
+  assert.equal(
+    destroyed,
+    false,
+    'Dependencies must remain open while work is unfinished',
+  );
+});

@@ -1,1 +1,25 @@
 .idea/
+
+# Dependencies and generated files
+node_modules/
+.turbo/
+dist/
+build/
+.next/
+coverage/
+*.tsbuildinfo
+
+# Local environment and OS files
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Package manager logs
+npm-debug.log*
+pnpm-debug.log*
+
+# Runtime data and tooling
+.storage/
+.cache/
+*.log

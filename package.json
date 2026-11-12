@@ -1,0 +1,27 @@
+{
+  "name": "gurov-web-app",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "check-types": "turbo run check-types",
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e",
+    "dev:api": "turbo run dev --filter=@gurov/api",
+    "db:generate": "pnpm --filter @gurov/database db:generate",
+    "db:migrate": "pnpm --filter @gurov/database db:migrate",
+    "db:studio": "pnpm --filter @gurov/database db:studio",
+    "test:integration": "turbo run test:integration",
+    "artifacts:check": "node scripts/check-artifacts.mjs",
+    "artifacts:clean": "node scripts/check-artifacts.mjs --fix"
+  },
+  "devDependencies": {
+    "turbo": "2.11.10"
+  }
+}
